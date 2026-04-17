@@ -406,3 +406,277 @@ ggplot() +
     axis.text = element_text(size = 11),
     panel.spacing = unit(1.1, "lines")
   )
+
+#### PRISM Data ####
+library(readr)
+library(dplyr)
+library(lubridate)
+
+prism <- read_csv(
+  "PRISM_ppt_tmin_tmean_tmax_stable_4km_200905_202008_39.9340_-77.2553.csv",
+  skip = 11,
+  col_names = c("Date", "ppt_in", "tmin_F", "tmean_F", "tmax_F"),
+  show_col_types = FALSE
+) %>%
+  mutate(
+    Date  = ym(Date),
+    Year  = year(Date),
+    Month = month(Date)
+  )
+
+prism
+
+
+library(dplyr)
+
+summer_means <- prism %>%
+  filter(Month %in% 5:8) %>%   # May–August
+  group_by(Year) %>%
+  summarise(
+    summer_ppt_in  = mean(ppt_in,  na.rm = TRUE),
+    summer_tmin_F  = mean(tmin_F,  na.rm = TRUE),
+    summer_tmean_F = mean(tmean_F, na.rm = TRUE),
+    summer_tmax_F  = mean(tmax_F,  na.rm = TRUE),
+    n_months = n(),
+    .groups = "drop"
+  ) %>%
+  arrange(Year)
+
+summer_means
+
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(stringr)
+
+#### 1) Summer climate (May–August means) ####
+summer_means <- prism %>%
+  filter(Month %in% 5:8) %>%
+  group_by(Year) %>%
+  summarise(
+    summer_ppt_in  = mean(ppt_in,  na.rm = TRUE),
+    summer_tmean_F = mean(tmean_F, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+#### 2) Merge with ITD summary ####
+clim_itd_summer <- mean_itd_year_site %>%
+  left_join(summer_means, by = "Year")
+
+#### 3) Make full Site × Year grid (keep climate-only years) ####
+sites <- unique(mean_itd_year_site$Site)
+
+full_grid <- tidyr::crossing(
+  Site = sites,
+  summer_means
+) %>%
+  left_join(mean_itd_year_site, by = c("Site", "Year")) %>%
+  arrange(Site, Year)
+
+#### 4) Prepare plotting data ####
+dat <- full_grid %>%
+  mutate(
+    Site = str_replace_all(Site, "_", " "),
+    ymin = mean_ITD_mm - se_ITD_mm,
+    ymax = mean_ITD_mm + se_ITD_mm
+  )
+
+clim_long <- dat %>%
+  select(Site, Year, summer_tmean_F, summer_ppt_in) %>%
+  pivot_longer(
+    cols = c(summer_tmean_F, summer_ppt_in),
+    names_to = "metric",
+    values_to = "value"
+  ) %>%
+  mutate(
+    metric = recode(metric,
+                    summer_tmean_F = "Summer mean temperature (°F)",
+                    summer_ppt_in  = "Summer mean precipitation (in)")
+  )
+
+itd_only <- dat %>%
+  filter(!is.na(mean_ITD_mm)) %>%
+  transmute(
+    Site, Year,
+    metric = "ITD (mm)",
+    value = mean_ITD_mm,
+    ymin, ymax, n
+  )
+
+year_breaks <- sort(unique(dat$Year))
+
+#### 5) Plot ####
+ggplot() +
+  
+  # Climate lines
+  geom_line(
+    data = clim_long,
+    aes(x = Year, y = value, group = 1),
+    linewidth = 0.9
+  ) +
+  geom_point(
+    data = clim_long,
+    aes(x = Year, y = value),
+    size = 2.3
+  ) +
+  
+  # ITD with SE
+  geom_line(
+    data = itd_only,
+    aes(x = Year, y = value, group = 1),
+    linewidth = 1.0
+  ) +
+  geom_point(
+    data = itd_only,
+    aes(x = Year, y = value),
+    size = 2.6
+  ) +
+  geom_errorbar(
+    data = itd_only,
+    aes(x = Year, ymin = ymin, ymax = ymax),
+    width = 0.15,
+    linewidth = 0.6
+  ) +
+  geom_text(
+    data = itd_only,
+    aes(x = Year, y = value, label = paste0("n=", n)),
+    vjust = 1.7,
+    size = 3
+  ) +
+  
+  facet_grid(metric ~ Site, scales = "free_y", switch = "y") +
+  scale_x_continuous(breaks = year_breaks) +
+  labs(
+    title = "Summer climate (May–Aug) and ITD through time",
+    subtitle = "Climate shown for all years; ITD only where sampled (± SE)",
+    x = "Year",
+    y = NULL
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", size = 17),
+    strip.text.x = element_text(face = "bold"),
+    strip.text.y.left = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(stringr)
+
+# Helper to build the full grid + plot for a chosen summer temp variable
+make_itd_summer_plot <- function(temp_var = c("tmin_F", "tmax_F"),
+                                 temp_label = c("Summer mean Tmin (°F)", "Summer mean Tmax (°F)")) {
+  
+  temp_var <- match.arg(temp_var)
+  temp_label <- temp_label[match(temp_var, c("tmin_F", "tmax_F"))]
+  
+  # 1) Summer (May–Aug) means from PRISM
+  summer_means <- prism %>%
+    filter(Month %in% 5:8) %>%
+    group_by(Year) %>%
+    summarise(
+      summer_ppt_in = mean(ppt_in, na.rm = TRUE),
+      summer_temp   = mean(.data[[temp_var]], na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  # 2) Full Site × Year climate grid and join ITD (keeps climate-only years)
+  sites <- sort(unique(mean_itd_year_site$Site))
+  
+  full_grid <- tidyr::crossing(
+    Site = sites,
+    summer_means
+  ) %>%
+    left_join(mean_itd_year_site, by = c("Site", "Year")) %>%
+    arrange(Site, Year) %>%
+    mutate(
+      Site = str_replace_all(Site, "_", " "),
+      ymin = mean_ITD_mm - se_ITD_mm,
+      ymax = mean_ITD_mm + se_ITD_mm
+    )
+  
+  # 3) Climate long format
+  clim_long <- full_grid %>%
+    select(Site, Year, summer_temp, summer_ppt_in) %>%
+    pivot_longer(c(summer_temp, summer_ppt_in), names_to = "metric", values_to = "value") %>%
+    mutate(
+      metric = recode(metric,
+                      summer_temp   = temp_label,
+                      summer_ppt_in = "Summer mean precipitation (in)")
+    )
+  
+  # 4) ITD only where sampled
+  itd_only <- full_grid %>%
+    filter(!is.na(mean_ITD_mm)) %>%
+    transmute(
+      Site, Year,
+      metric = "ITD (mm)",
+      value = mean_ITD_mm,
+      ymin, ymax, n
+    )
+  
+  year_breaks <- sort(unique(full_grid$Year))
+  
+  # 5) Plot
+  ggplot() +
+    geom_line(
+      data = clim_long,
+      aes(x = Year, y = value, group = 1),
+      linewidth = 0.9
+    ) +
+    geom_point(
+      data = clim_long,
+      aes(x = Year, y = value),
+      size = 2.3
+    ) +
+    geom_line(
+      data = itd_only,
+      aes(x = Year, y = value, group = 1),
+      linewidth = 1.0
+    ) +
+    geom_point(
+      data = itd_only,
+      aes(x = Year, y = value),
+      size = 2.6
+    ) +
+    geom_errorbar(
+      data = itd_only,
+      aes(x = Year, ymin = ymin, ymax = ymax),
+      width = 0.15,
+      linewidth = 0.6
+    ) +
+    geom_text(
+      data = itd_only,
+      aes(x = Year, y = value, label = paste0("n=", n)),
+      vjust = 1.7,
+      size = 3
+    ) +
+    facet_grid(metric ~ Site, scales = "free_y", switch = "y") +
+    scale_x_continuous(breaks = year_breaks) +
+    labs(
+      title = paste0("Summer climate (May–Aug) and ITD through time: ", gsub("Summer mean ", "", temp_label)),
+      subtitle = "Climate shown for all years; ITD only where sampled (± SE)",
+      x = "Year",
+      y = NULL
+    ) +
+    theme_minimal(base_size = 13) +
+    theme(
+      plot.title = element_text(face = "bold", size = 17),
+      strip.text.x = element_text(face = "bold"),
+      strip.text.y.left = element_text(face = "bold"),
+      panel.grid.minor = element_blank()
+    )
+}
+
+# Plot 1: Tmin
+p_tmin <- make_itd_summer_plot("tmin_F", c("Summer mean Tmin (°F)", "Summer mean Tmax (°F)"))
+print(p_tmin)
+
+# Plot 2: Tmax
+p_tmax <- make_itd_summer_plot("tmax_F", c("Summer mean Tmin (°F)", "Summer mean Tmax (°F)"))
+print(p_tmax)
+
+
